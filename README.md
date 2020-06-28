@@ -7,15 +7,9 @@ virtualenv venv -p python3 \
 ```
 
 RUN:
+
 ```
-python src/split.py  \
---input-file=input/input.mp3 \
---output-dir=output/ \
---appl-silence=500 \
---frame-length=4096 \
---hop-length=256 \
---split-trshld=40 \
---min-power=-30
+python src/split.py -i input/input.mp3 -o output/ -of mp3 -p chunk -fl 500 -fs 50 -l 300 -sr 44100
 ```
 
 ```
@@ -28,8 +22,5 @@ python src/asr.py \
 ```
 
 ```
-python src/text.py \
---text-input=$(pwd)/input/source.txt \
---test-sents=$(pwd)/output/result.txt \
---output-file=$(pwd)/output/similar.txt
+python src/text_eval.py -i input/source.txt -j output/result.json -q 3 -qmax 70 -qstep 5
 ```

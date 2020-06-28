@@ -1,67 +1,144 @@
-import urllib.request
-import json
-import os
-
 import argparse
-import re
+import io
+import json
+import logging
+import os
+import sys
+
+import pydub
+
+from log import LOGGING_FMT
+from speech.google import transcribe_google
+from speech.yandex import transcribe_yandex
+
+logger = logging.getLogger("asr")
+logger.setLevel(logging.INFO)
+
+handler = logging.StreamHandler(sys.stdout)
+handler.setLevel(logging.INFO)
+formatter = logging.Formatter(LOGGING_FMT)
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 
-def transcribe_ogg(input_dir, output_file, iam_token, folder_id, limit=None):
-    result_strings = []
+SUPPORTED_EXT = [".wav", ".aiff", ".ogg", ".mp3", ".m4a", ".wma"]
 
+
+def prepare_file(filename, to="ogg"):
+    _, ext = os.path.splitext(filename)
+    if ext not in SUPPORTED_EXT:
+        return
+
+    buf = io.BytesIO()
+    audio = pydub.AudioSegment.from_file(filename)
+
+    if to == "ogg":
+        return audio.export(buf, "ogg", "opus", parameters=["-strict", "-2"])
+    return audio.export(buf, ext.replace(".", ""))
+
+
+def process(input_dir, iam_token, folder_id, jsonfile, language, limit=None):
+    logger.info("Preparing for transcribation")
     work_dir = os.listdir(input_dir)
     work_dir.sort()
+
+    result_data = {}
 
     if len(work_dir) < 1:
         raise Exception("No files in input dir. Exit")
 
-    for filename in work_dir[:limit]:
-        _, ext = os.path.splitext(filename)
-        if not ext == ".ogg":
+    total = len(work_dir[:limit])
+    for idx, filename in enumerate(work_dir[:limit]):
+        logger.info(f"Transcribing file {idx} of {total}")
+        file = prepare_file(os.path.join(input_dir, filename))
+        if not file:
             continue
 
-        with open(os.path.join(input_dir, filename), "rb") as f:
-            data = f.read()
+        with file as f:
+            audio_data = f.read()
 
-        params = "&".join(["topic=general", "folderId=%s" % folder_id, "lang=ru-RU"])
         try:
-            url = urllib.request.Request(
-                "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize?%s" % params,
-                data=data,
-            )
-            url.add_header("Authorization", "Bearer %s" % iam_token)
-
-            responseData = urllib.request.urlopen(url).read().decode("UTF-8")
-            decodedData = json.loads(responseData)
-        except Exception:
-            print("Error, file is ", filename)
+            if language == "ru-RU":
+                result = transcribe_yandex(audio_data, iam_token, folder_id, language)
+            else:
+                result = transcribe_google(audio_data, language, sample_rate=48000)
+            result_data[filename] = result
+        except Exception as e:
+            logger.error(f"Error while transcribing chunk {filename}", e)
             continue
 
-        if decodedData.get("error_code") is None:
-            phrase = decodedData.get("result")
-            print(phrase, "————", filename)
-            result_strings.append(phrase)
+    logger.info("Transcribing finished. Saving result to json file")
 
-    with open(output_file, "w") as file:
-        for item in result_strings:
-            file.write(f"{item}\n")
+    with open(jsonfile, "r+") as file:
+        data = json.load(file)
+        for (fname, asr_string) in result_data.items():
+            data[fname]["asr"] = asr_string
+        file.seek(0)
+        json.dump(data, file, ensure_ascii=False)
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Process ASR for audio files.")
-    parser.add_argument("--input-dir", type=str, help="Ogg files dir")
-    parser.add_argument("--output-file", type=str, help="Output file")
+def main():
+    parser = argparse.ArgumentParser(
+        description="""
+            Process ASR for audio files.
+
+            ** CREDENTIALS **
+
+            Please specify `--iam` and `--folder-id` for Yandex Services.
+            See https://cloud.yandex.ru/docs/iam/operations/iam-token/create for reference.
+
+            For Google Speech To Text use environmental variables and config as described here —
+            https://cloud.google.com/speech-to-text/docs/libraries#linux-or-macos
+    """,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    parser.add_argument("-i", "--input-dir", type=str, help="Ogg files dir")
+    parser.add_argument("-ll", "--language", type=str, help="Language")
+    parser.add_argument("-l", "--limit", type=int, help="Limit files to transcribe")
+    parser.add_argument("-j", "--jsonfile", type=str, help="Path to resulting jsonfile")
     parser.add_argument("--iam", type=str, help="YC IAM Token")
     parser.add_argument("--folder-id", type=str, help="YC Folder ID")
-    parser.add_argument("--limit", type=int, help="Limit files to transcribe")
 
     args = parser.parse_args()
 
-    input_dir = args.input_dir
-    iam_token = args.iam
-    folder_id = args.folder_id
-    output_file = args.output_file
-    limit = args.limit
+    language = args.language
+    if not language:
+        logger.error("Please specify language code of input audio file.")
+        exit(1)
 
-    transcribe_ogg(input_dir, output_file, iam_token, folder_id, limit)
+    if language == "ru-RU" and not all((args.iam, args.folder_id)):
+        logger.error(
+            "Please provide both Yandex Cloud IAM Token and Folder ID."
+            "See https://cloud.yandex.ru/docs/iam/operations/iam-token/create"
+        )
+        exit(1)
 
+    elif language == "en-US" and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+        logger.error(
+            "Please export GOOGLE_APPLICATION_CREDENTIALS to environment."
+            "See https://cloud.google.com/speech-to-text/docs/libraries#linux-or-macos"
+        )
+        exit(1)
+
+    kwargs = {
+        "input_dir": args.input_dir,
+        "iam_token": args.iam,
+        "folder_id": args.folder_id,
+        "language": args.language,
+        "limit": args.limit,
+        "jsonfile": args.jsonfile,
+    }
+
+    logger.info("settings loaded:")
+    for k, v in kwargs.items():
+        if k in ("iam_token", "folder_id") and v:
+            logger.info(f"{k}: [hidden]")
+        else:
+            logger.info(f"{k}: {v}")
+
+    process(**kwargs)
+
+
+if __name__ == "__main__":
+    main()

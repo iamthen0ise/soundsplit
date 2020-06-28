@@ -1,100 +1,202 @@
 import argparse
 import io
 import json
+import logging
 import os
 import sys
 
+import librosa
+import numpy as np
 from pydub import AudioSegment
 
-import librosa
+from log import LOGGING_FMT
+
+logger = logging.getLogger("splitter")
+logger.setLevel(logging.INFO)
+
+handler = logging.StreamHandler(sys.stdout)
+handler.setLevel(logging.DEBUG)
+formatter = logging.Formatter(LOGGING_FMT)
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 
-def split(
+silence_segment = AudioSegment.silent(duration=300)
+
+
+def getboundaries(frame_idxs, frame_shift, frame_rate):
+    start_idxs = [frame_idxs[0]]
+    end_idxs = []
+
+    shapeofidxs = np.shape(frame_idxs)
+    for i in range(shapeofidxs[0] - 1):
+        if (frame_idxs[i + 1] - frame_idxs[i]) != 1:
+            end_idxs.append(frame_idxs[i])
+            start_idxs.append(frame_idxs[i + 1])
+
+    end_idxs.append(frame_idxs[-1])
+    if end_idxs[-1] == start_idxs[-1]:
+        end_idxs.pop()
+        start_idxs.pop()
+    assert len(start_idxs) == len(
+        end_idxs
+    ), "Error! Num of start_idxs doesnt match Num of end_idxs."
+    start_idxs = np.array(start_idxs)
+    end_idxs = np.array(end_idxs)
+    start_t = start_idxs * frame_shift / frame_rate
+    end_t = end_idxs * frame_shift / frame_rate
+    return start_t, end_t
+
+
+def process(
     input_file,
     output_dir,
-    appl_silence=500,
-    frame_length=4096,
-    hop_length=256,
-    split_trshld=40,
-    min_power=-30,
+    samplerate,
+    prefix,
+    frame_length,
+    frame_shift,
+    q_factor,
+    limit,
 ):
+    logger.info("Loading audio")
 
-    silence_segment = AudioSegment.silent(duration=appl_silence)
+    _, ext = os.path.splitext(input_file)
+    ext = ext.replace(".", "")
+    pydub_kwargs = {"format": ext}
+    if ext == "mp3":
+        pydub_kwargs["codec"] = ext
+    elif ext == "ogg":
+        pydub_kwargs["codec"] = "opus"
 
-    audio_src, samplerate = librosa.core.load(input_file)
+    audio_src, frame_rate = librosa.load(input_file, sr=samplerate, duration=limit)
+    audio_src = librosa.util.normalize(audio_src)
 
-    audio_chunks = librosa.effects.split(
-        audio_src, top_db=split_trshld, frame_length=frame_length, hop_length=hop_length
+    frame_len = int(frame_length * frame_rate / 1000)
+    frame_shift = int(frame_shift * frame_rate / 1000)
+
+    rms = librosa.feature.rms(audio_src, frame_length=frame_len, hop_length=frame_shift)
+    rms = rms[0]
+    rms = librosa.util.normalize(rms, axis=0)
+
+    logger.info("Using RMS for peak detection")
+    logger.info(f"Mean RMS is: {np.mean(rms)}")
+    logger.info(f"RMS standard deviation is {np.std(rms)}")
+
+    logger.info("Calculating Zero-Crossing rate")
+    zero_x = librosa.feature.zero_crossing_rate(
+        audio_src, frame_length=frame_len, hop_length=frame_shift, threshold=0
     )
+    zero_x = zero_x[0]
+    zero_x = librosa.util.normalize(zero_x, axis=0)
 
-    cur_idx = 1
-    json_data = []
-    for (start, end) in audio_chunks:
-        sys.stdout.write(f"\r Writing chunks {cur_idx} of {len(audio_chunks)}")
-        audio = audio_src[start:end]
-        if max(librosa.core.power_to_db(audio)) < min_power:
-            continue
-        if librosa.core.get_duration(audio) < float(0.5):
-            continue
-        else:
-            start_sec = librosa.core.samples_to_time(start, samplerate)
-            end_sec = librosa.core.samples_to_time(end, samplerate)
-            audio, _ = librosa.effects.trim(audio, top_db=60)
-            audio = librosa.util.normalize(audio)
-            buf = io.BytesIO()
-            filename = os.path.join(output_dir, "file_{:05d}.ogg".format(cur_idx))
-            librosa.output.write_wav(buf, audio, samplerate)
+    logger.info(f"Mean Zero-Crossing rate is: {np.mean(zero_x)}")
+    logger.info(f"Zero-Crossing rate standard deviation is {np.std(zero_x)}")
 
+    frame_idxs = np.where(
+        (rms > np.std(rms) * q_factor) | (zero_x > np.average(zero_x) * q_factor)
+    )[0]
+
+    logger.info("Calculating bounds for splitting.")
+
+    start_t, end_t = getboundaries(frame_idxs, frame_shift, frame_rate)
+
+    json_data = {}
+
+    logger.info("Start splitting.")
+    for idx, (start, end) in enumerate(zip(start_t, end_t)):
+        start_s = librosa.core.time_to_samples(start, frame_rate)
+        end_s = librosa.core.time_to_samples(end, frame_rate)
+        audio = audio_src[start_s:end_s]
+
+        if len(audio) == 0:
+            continue
+
+        audio = librosa.util.normalize(audio)
+        filename = prefix + "_{:05d}.{}".format(idx, ext)
+
+        logger.info(f"Writing chunks: {filename}")
+
+        buf = io.BytesIO()
+        librosa.output.write_wav(buf, audio, frame_rate)
+
+        try:
             sg = AudioSegment.from_wav(buf)
             sg = silence_segment + sg + silence_segment
+            sg.export(os.path.join("output", filename), **pydub_kwargs)
+            json_data[filename] = {
+                "start": round(start, 1),
+                "end": round(end, 1),
+                "asr": None,
+                "found": None,
+                "shift": 0,
+                "diff": 0,
+            }
 
-            sg.export(filename, "ogg")
+        except Exception as e:
+            logger.error(e)
+            continue
 
-            json_data.append(
-                {
-                    filename: {
-                        "start": round(start_sec, 1),
-                        "end": round(end_sec, 1),
-                        "asr": "-",
-                        "found": "-",
-                        "shift": 0,
-                        "diff": 0,
-                    }
-                }
-            )
-            sys.stdout.flush()
-        cur_idx += 1
+    logging.info("Split finished. Saving json file data")
 
     with open("output/result.json", "w") as json_file:
         json.dump(json_data, json_file)
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Split audio files by silence.")
-    parser.add_argument("--input-file", type=str, help="Input MP3 file")
-    parser.add_argument("--output-dir", type=str, help="Ogg files dir")
-    parser.add_argument(
-        "--appl-silence", type=int, help="Applied silence for resulting chunk"
+def main():
+    parser = argparse.ArgumentParser(
+        description="""
+            Split audio files by RMS energy and Zero-Crossing.
+            
+            Frame length is length of audio sample window
+            Frame shift is a distance between audio samples
+            
+            Q-Factor is a factor used for smoothing RMS and Zero-Crossing peak values.
+            e.g. if RMS=0.5 and Q-Factor=0.8 the resulting RMS would be 0.5*0.8
+            
+            Limit is a length of audio that should be splitter from start.
+
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--frame-length", type=int, help="Librosa frame lenght")
+    parser.add_argument("-i", "--input-file", type=str, help="Input file path")
+    parser.add_argument("-o", "--output-dir", type=str, help="Ogg files dir")
     parser.add_argument(
-        "--hop-length", type=int, help="Librosa interval between analysis frames"
+        "-p", "--prefix", type=str, default="file", help="Output file name prefix"
     )
     parser.add_argument(
-        "--split-trshld", type=int, help="Power diff used for split in dB"
+        "-fl", "--frame-length", type=int, default=1000, help="Librosa frame length"
     )
     parser.add_argument(
-        "--min-power", type=int, help="Minimal power used for detect speech in dB"
+        "-fs", "--frame-shift", type=int, default=50, help="Librosa frame shift"
+    )
+    parser.add_argument(
+        "-l", "--limit", type=int, default=None, help="Source audio length from start"
+    )
+    parser.add_argument(
+        "-sr", "--samplerate", type=int, default=None, help="Source audio samplerate"
+    )
+    parser.add_argument(
+        "-q", "--q-factor", type=int, default=0.7, help="Qualify Factor"
     )
 
     args = parser.parse_args()
+    kwargs = {
+        "input_file": args.input_file,
+        "output_dir": args.output_dir,
+        "samplerate": args.samplerate,
+        "prefix": args.prefix,
+        "frame_length": args.frame_length,
+        "frame_shift": args.frame_shift,
+        "q_factor": args.q_factor,
+        "limit": args.limit,
+    }
 
-    split(
-        input_file=args.input_file,
-        output_dir=args.output_dir,
-        appl_silence=args.appl_silence,
-        frame_length=args.frame_length,
-        hop_length=args.hop_length,
-        split_trshld=args.split_trshld,
-        min_power=args.min_power,
-    )
+    logger.info("settings loaded:")
+    for k, v in kwargs.items():
+        logger.info(f"{k}: {v}")
+
+    process(**kwargs)
+
+
+if __name__ == "__main__":
+    main()
