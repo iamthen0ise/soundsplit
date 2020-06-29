@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sys
+from typing import List, Optional, Tuple
 
 import librosa
 import numpy as np
@@ -24,7 +25,18 @@ logger.addHandler(handler)
 silence_segment = AudioSegment.silent(duration=300)
 
 
-def getboundaries(frame_idxs, frame_shift, frame_rate):
+def get_bounds(frame_idxs: List[float], frame_shift: int, frame_rate: int) -> Tuple[float, float]:
+    """
+        .. py:function:: get_bounds(frame_idxs, frame_shift, frame_rate)
+
+        Count bounds for each frame.
+
+        :param np.array frame_idxs: Detected frame indexes
+        :param int frame_shift: Frame shift
+        :param int frame_rate: Frame rate
+        :return: Start and end bounds for each frame
+        :rtype: tuple
+    """
     start_idxs = [frame_idxs[0]]
     end_idxs = []
 
@@ -38,26 +50,45 @@ def getboundaries(frame_idxs, frame_shift, frame_rate):
     if end_idxs[-1] == start_idxs[-1]:
         end_idxs.pop()
         start_idxs.pop()
-    assert len(start_idxs) == len(
-        end_idxs
-    ), "Error! Num of start_idxs doesnt match Num of end_idxs."
+    if len(start_idxs) == len(end_idxs):
+        logging.error("Error! Number of start indexes not matching number of end indexes")
+        exit
     start_idxs = np.array(start_idxs)
     end_idxs = np.array(end_idxs)
-    start_t = start_idxs * frame_shift / frame_rate
-    end_t = end_idxs * frame_shift / frame_rate
+    start_t = start_idxs * frame_shift / frame_rate  # type: ignore
+    end_t = end_idxs * frame_shift / frame_rate  # type: ignore
     return start_t, end_t
 
 
 def process(
-    input_file,
-    output_dir,
-    samplerate,
-    prefix,
-    frame_length,
-    frame_shift,
-    q_factor,
-    limit,
+    input_file: str,
+    output_dir: str,
+    samplerate: Optional[int],
+    prefix: str,
+    frame_length: int,
+    frame_shift: int,
+    q_factor: float,
+    limit: Optional[int],
 ):
+    """
+        .. py:function:: process(
+            input_file, output_dir, samplerate, prefix, frame_length, frame_shift, q_factor,  limit)
+
+        Process audio from file and split it into chunks.
+        Dumps metadata to json.
+
+        :param str input_file: Input file path
+        :param str output_dir: Path for output chunks and json file directory
+        :param int [samplerate]: (Optional) Samplerate of input audio
+        :param str prefix: Chunk file name prefix
+        :param int frame_length: Frame length
+        :param int frame_shift: Frame shift
+        :param float q_factor: Quality Factor
+        :param int [limit]: Input audio track length limit
+
+        :return: 
+        :rtype: None
+    """
     logger.info("Loading audio")
 
     _, ext = os.path.splitext(input_file)
@@ -98,12 +129,12 @@ def process(
 
     logger.info("Calculating bounds for splitting.")
 
-    start_t, end_t = getboundaries(frame_idxs, frame_shift, frame_rate)
+    start_t, end_t = get_bounds(frame_idxs, frame_shift, frame_rate)
 
     json_data = {}
 
     logger.info("Start splitting.")
-    for idx, (start, end) in enumerate(zip(start_t, end_t)):
+    for idx, (start, end) in enumerate(zip(start_t, end_t)):  # type: ignore
         start_s = librosa.core.time_to_samples(start, frame_rate)
         end_s = librosa.core.time_to_samples(end, frame_rate)
         audio = audio_src[start_s:end_s]
@@ -146,13 +177,13 @@ def main():
     parser = argparse.ArgumentParser(
         description="""
             Split audio files by RMS energy and Zero-Crossing.
-            
+
             Frame length is length of audio sample window
             Frame shift is a distance between audio samples
-            
+
             Q-Factor is a factor used for smoothing RMS and Zero-Crossing peak values.
             e.g. if RMS=0.5 and Q-Factor=0.8 the resulting RMS would be 0.5*0.8
-            
+
             Limit is a length of audio that should be splitter from start.
 
         """,

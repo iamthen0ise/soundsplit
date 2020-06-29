@@ -1,8 +1,22 @@
+import io
+
 from google.cloud import speech_v1
 from google.cloud.speech_v1.gapic import enums
 
 
-def transcribe_google(audio_data, language, sample_rate):
+def transcribe_google(audio_data: io.BytesIO, language: str, sample_rate: int) -> str:
+    """
+        .. py:function:: transcribe_google(audio_data, language, sample_rate)
+
+        Transcribe given audio fragment in Google Speech API
+
+        :param io.BytesIO audio_data: Audio fragment
+        :param str language: Language Code
+        :param int sample_rate: File Sample Rate
+
+        :return: String of first recognized result
+        :rtype: str
+    """
     client = speech_v1.SpeechClient()
 
     sample_rate_hertz = sample_rate

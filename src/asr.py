@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sys
+from typing import Union
 
 import pydub
 
@@ -24,10 +25,21 @@ logger.addHandler(handler)
 SUPPORTED_EXT = [".wav", ".aiff", ".ogg", ".mp3", ".m4a", ".wma"]
 
 
-def prepare_file(filename, to="ogg"):
+def prepare_file(filename: str, to: str = "ogg") -> Union[io.BytesIO, None]:
+    """
+        .. py:function:: prepare_file(filename, to)
+
+        Convert audio fragment to compatible format for sending to ASR engines
+
+        :param str filename: File name
+        :param str to: Output format (default="ogg")
+
+        :return: BytesIO Object with audiofile data
+        :rtype: io.BytesIO
+    """
     _, ext = os.path.splitext(filename)
     if ext not in SUPPORTED_EXT:
-        return
+        return None
 
     buf = io.BytesIO()
     audio = pydub.AudioSegment.from_file(filename)
@@ -37,7 +49,23 @@ def prepare_file(filename, to="ogg"):
     return audio.export(buf, ext.replace(".", ""))
 
 
-def process(input_dir, iam_token, folder_id, jsonfile, language, limit=None):
+def process(input_dir: str, iam_token: str, folder_id: str, jsonfile: str, language: str, limit: int = None) -> None:
+    """
+        .. py:function:: process(input_dir, iam_token, folder_id, jsonfile, language, limit)
+
+        Processing input audio fragments through ASR engine and resulting into JSON File
+
+        :param str input_dir: Path to directory with audio chunks
+        :param str iam_token: IAM Token for Yandex Cloud
+        :param str folder_id: Folder id for Yandex Cloud
+        :param str jsonfile: Path to JSON File
+        :param str language: Language Code, e.g. ru-RU, en-US
+        :param int limit: Limit of processing files.
+
+
+        :return: None
+        :rtype: None
+    """
     logger.info("Preparing for transcribation")
     work_dir = os.listdir(input_dir)
     work_dir.sort()
@@ -69,12 +97,12 @@ def process(input_dir, iam_token, folder_id, jsonfile, language, limit=None):
 
     logger.info("Transcribing finished. Saving result to json file")
 
-    with open(jsonfile, "r+") as file:
-        data = json.load(file)
+    with open(jsonfile, "r+") as file:  # type: ignore
+        data = json.load(file)  # type: ignore
         for (fname, asr_string) in result_data.items():
             data[fname]["asr"] = asr_string
-        file.seek(0)
-        json.dump(data, file, ensure_ascii=False)
+        file.seek(0)  # type: ignore
+        json.dump(data, file, ensure_ascii=False)  # type: ignore
 
 
 def main():
@@ -93,7 +121,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    parser.add_argument("-i", "--input-dir", type=str, help="Ogg files dir")
+    parser.add_argument("-i", "--input-dir", type=str, help="Input files dir")
     parser.add_argument("-ll", "--language", type=str, help="Language")
     parser.add_argument("-l", "--limit", type=int, help="Limit files to transcribe")
     parser.add_argument("-j", "--jsonfile", type=str, help="Path to resulting jsonfile")

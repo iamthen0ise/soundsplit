@@ -1,13 +1,15 @@
 import argparse
 import json
 import logging
+import os
 import re
 import string
-import os
 import sys
+from typing import Dict, List, Optional
 
 import Levenshtein
 from fuzzysearch import find_near_matches
+from fuzzysearch.common import Match
 
 from log import LOGGING_FMT
 
@@ -21,7 +23,17 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 
-def normalize_text(text):
+def normalize_text(text: str) -> str:
+    """
+        .. py:function:: normalize_text(text)
+
+        Returns text lower cased and without any punctuation
+
+        :param str text: Input text
+
+        :return: Processed text
+        :rtype: str
+    """
     normalized_text = text.lower()
 
     normalized_text = re.sub(r"\\d+", "", normalized_text)
@@ -33,7 +45,21 @@ def normalize_text(text):
     return normalized_text
 
 
-def get_fuzzymatches(sentence, text, q_factor, qmax, qstep):
+def get_fuzzymatches(sentence: str, text: str, q_factor: int, qmax: int, qstep: int) -> List[Match]:
+    """
+        .. py:function:: get_fuzzymatches(sentence, text, q_factor, qmax, qstep)
+
+        Finds fuzzy matches of sentence in text
+
+        :param str sentence: Input sentence to find
+        :param str text: Input text
+        :param int q_factor: Value of initial Max Levenshtein distance
+        :param str qmax: Max Value of Levenshtein distance
+        :param str qstep: Levenshter distance increasing step
+
+        :return: List of fuzzy matches
+        :rtype: list[Match]
+    """
     fuzzymatches = []
     while q_factor <= qmax:
         fuzzymatches = find_near_matches(sentence.lower(), text, max_l_dist=q_factor)
@@ -49,14 +75,36 @@ def get_fuzzymatches(sentence, text, q_factor, qmax, qstep):
     return fuzzymatches
 
 
-def get_distances(fuzzymatches, sentence):
+def get_distances(fuzzymatches: List[Match], sentence: str) -> List[Match]:
+    """
+        .. py:function:: get_distances(fuzzymatches, sentence)
+
+        Finds sentence in fuzzy matches list with minimal Levenshtein distance
+
+        :param list[Match] fuzzymatches: List of fuzzy matched strings
+        :param str sentence: Sentence to find
+
+        :return: List of fuzzy matches sorted by minimal distance
+        :rtype: list[Match, int]
+    """
     distances = []
     for match in fuzzymatches:
         distances.append((match, Levenshtein.distance(match.matched, sentence)))
     return sorted(distances, key=lambda x: x[1])
 
 
-def dump_json(jsonfile, result_data):
+def dump_json(jsonfile: str, result_data: Dict) -> bool:
+    """
+        .. py:function:: dump_json(jsonfile: str, result_data: Dict)
+
+        Dump fuzzy search results to json file
+
+        :param str jsonfile: JSON File path
+        :param dict result_data: Dictionary with search data
+
+        :return: True when file written
+        :rtype: bool
+    """
     logger.info("Evaluating finished. Writing to JSON File")
     with open(jsonfile, "r+") as file:
         data = json.load(file)
@@ -71,7 +119,19 @@ def dump_json(jsonfile, result_data):
     return True
 
 
-def process(text_input, jsonfile, q_factor, qmax, qstep):
+def process(text_input: str, jsonfile: str, q_factor: int, qmax: int, qstep: int):
+    """
+        .. py:function:: process(text_input, jsonfile, q_factor, qmax, qstep)
+
+        Process text and find ASR sentences in original text. Process result to JSON File
+
+        :param str text_input: Path to source text
+        :param str jsonfile: JSON File path
+        :param int q_factor: Value of initial Max Levenshtein distance
+        :param str qmax: Max Value of Levenshtein distance
+        :param str qstep: Levenshter distance increasing step
+
+    """
     result_data = {}
 
     with open(jsonfile, "r") as json_f:
@@ -105,7 +165,7 @@ def process(text_input, jsonfile, q_factor, qmax, qstep):
         eval_str = best.matched
         shift = text.lower().find(eval_str)
         if shift == -1:
-            shift = None
+            shift = None  # type: ignore
 
         result_data[fname] = {"lev_dist": ld, "shift": shift, "eval_string": eval_str}
 
