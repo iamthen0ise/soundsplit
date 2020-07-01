@@ -1,6 +1,9 @@
 Requirements:
+
+```
 python 3.7
 ffmpeg
+```
 
 Installation:
 
@@ -8,8 +11,6 @@ Installation:
 virtualenv venv -p python3 \
 && source venv/bin/activate \
 && pip install -r requirements.txt
-
-source venv/bin/activate
 
 ```
 
