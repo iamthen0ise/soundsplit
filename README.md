@@ -19,11 +19,17 @@ RUN:
 Audio Split
 
 ```bash
-usage: split.py [-h] [-i INPUT_FILE] [-o OUTPUT_DIR] [-p PREFIX]
+usage: split.py [-h] [-i INPUT_FILE] [-o OUTPUT_DIR] [-m METHOD] [-p PREFIX]
                 [-fl FRAME_LENGTH] [-fs FRAME_SHIFT] [-l LIMIT]
                 [-sr SAMPLERATE] [-q Q_FACTOR]
 
-            Split audio files by RMS energy and Zero-Crossing.
+            Split audio files by chosen <method>.
+
+            If method is `ina`, then using Ina Speech Segmenter.
+            If method is `rms` or not specified, using RMS energy and Zero-Crossing.
+
+            Ina provides more accurate results thought could be slow and cannot be configured.
+            RMS method could be configured via params, but may return some broken audio chunks.
 
             Frame length is length of audio sample window
             Frame shift is a distance between audio samples
@@ -40,6 +46,7 @@ Example:
 python src/split.py --input-file <input file path> \
 --output-dir <output dir path> \
 --prefix <prefix> \
+--method rms
 --frame-length 500 \
 --frame-shift 50 \
 --limit 300 \

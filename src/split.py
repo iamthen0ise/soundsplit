@@ -1,10 +1,12 @@
 import argparse
+import csv
 import io
 import json
 import logging
 import os
 import sys
 from typing import List, Optional, Tuple
+from inaSpeechSegmenter import Segmenter, seg2csv
 
 import librosa
 import numpy as np
@@ -60,48 +62,17 @@ def get_bounds(frame_idxs: List[float], frame_shift: int, frame_rate: int) -> Tu
     return start_t, end_t
 
 
-def process(
-    input_file: str,
-    output_dir: str,
-    samplerate: Optional[int],
-    prefix: str,
-    frame_length: int,
-    frame_shift: int,
-    q_factor: float,
-    limit: Optional[int],
-):
-    """
-        .. py:function:: process(
-            input_file, output_dir, samplerate, prefix, frame_length, frame_shift, q_factor,  limit)
+def _iina_segmentation(input_file):
+    seg = Segmenter()
+    segmentation = seg(input_file)
+    result = []
+    for segment in segmentation:
+        if segment[0] not in ('energy', 'noEnergy', 'noise', 'music'):
+            result.append((segment[1], segment[2]))
 
-        Process audio from file and split it into chunks.
-        Dumps metadata to json.
+    return result
 
-        :param str input_file: Input file path
-        :param str output_dir: Path for output chunks and json file directory
-        :param int [samplerate]: (Optional) Samplerate of input audio
-        :param str prefix: Chunk file name prefix
-        :param int frame_length: Frame length
-        :param int frame_shift: Frame shift
-        :param float q_factor: Quality Factor
-        :param int [limit]: Input audio track length limit
-
-        :return: 
-        :rtype: None
-    """
-    logger.info("Loading audio")
-
-    _, ext = os.path.splitext(input_file)
-    ext = ext.replace(".", "")
-    pydub_kwargs = {"format": ext}
-    if ext == "mp3":
-        pydub_kwargs["codec"] = ext
-    elif ext == "ogg":
-        pydub_kwargs["codec"] = "opus"
-
-    audio_src, frame_rate = librosa.load(input_file, sr=samplerate, duration=limit)
-    audio_src = librosa.util.normalize(audio_src)
-
+def _rms_segmentation(audio_src, samplerate, frame_rate, frame_length, frame_shift, q_factor):
     frame_len = int(frame_length * frame_rate / 1000)
     frame_shift = int(frame_shift * frame_rate / 1000)
 
@@ -131,12 +102,66 @@ def process(
 
     start_t, end_t = get_bounds(frame_idxs, frame_shift, frame_rate)
 
+    return start_t, end_t
+
+def process(
+    input_file: str,
+    output_dir: str,
+    samplerate: Optional[int],
+    prefix: str,
+    method: str,
+    frame_length: int,
+    frame_shift: int,
+    q_factor: float,
+    limit: Optional[int]
+):
+    """
+        .. py:function:: process(
+            input_file, output_dir, samplerate, prefix, method, frame_length, frame_shift, q_factor,  limit)
+
+        Process audio from file and split it into chunks.
+        Dumps metadata to json.
+
+        :param str input_file: Input file path
+        :param str output_dir: Path for output chunks and json file directory
+        :param int [samplerate]: (Optional) Samplerate of input audio
+        :param str prefix: Chunk file name prefix
+        :param str method: Prefered Segmentation method,
+        :param int frame_length: Frame length
+        :param int frame_shift: Frame shift
+        :param float q_factor: Quality Factor
+        :param int [limit]: Input audio track length limit
+
+        :return: 
+        :rtype: None
+    """
+    logger.info("Loading audio")
+
+    _, ext = os.path.splitext(input_file)
+    ext = ext.replace(".", "")
+    pydub_kwargs = {"format": ext}
+    if ext == "mp3":
+        pydub_kwargs["codec"] = ext
+    elif ext == "ogg":
+        pydub_kwargs["codec"] = "opus"
+
+    audio_src, frame_rate = librosa.load(input_file, sr=samplerate, duration=limit)
+    audio_src = librosa.util.normalize(audio_src)
+
+    if method == 'rms':
+        logger.info("Use RMS Segmentation method")
+        start, end = _rms_segmentation(audio_src, samplerate, frame_rate, frame_length, frame_shift, q_factor)
+        segmentation = zip(start, end)
+    else:
+        logger.info("Use INA Speech Segmentation method. Could be slow on CPU-Only Hosts")
+        segmentation = _iina_segmentation(input_file)
+
     json_data = {}
 
     logger.info("Start splitting.")
-    for idx, (start, end) in enumerate(zip(start_t, end_t)):  # type: ignore
-        start_s = librosa.core.time_to_samples(start, frame_rate)
-        end_s = librosa.core.time_to_samples(end, frame_rate)
+    for idx, (start, end) in enumerate(segmentation):  # type: ignore
+        start_s = librosa.core.time_to_samples(round(float(start), 2), frame_rate)
+        end_s = librosa.core.time_to_samples(round(float(end), 2), frame_rate)
         audio = audio_src[start_s:end_s]
 
         if len(audio) == 0:
@@ -176,7 +201,13 @@ def process(
 def main():
     parser = argparse.ArgumentParser(
         description="""
-            Split audio files by RMS energy and Zero-Crossing.
+            Split audio files by chosen <method>.
+
+            If method is `ina`, then using Ina Speech Segmenter.
+            If method is `rms` or not specified, using RMS energy and Zero-Crossing.
+
+            Ina provides more accurate results thought could be slow and cannot be configured.
+            RMS method could be configured via params, but may return some broken audio chunks.
 
             Frame length is length of audio sample window
             Frame shift is a distance between audio samples
@@ -191,6 +222,8 @@ def main():
     )
     parser.add_argument("-i", "--input-file", type=str, help="Input file path")
     parser.add_argument("-o", "--output-dir", type=str, help="Ogg files dir")
+    parser.add_argument("-m", "--method", default='rms', type=str,
+                        help="Segmentation method: `ina` for INA Speech Segmenter or `rms` for RMS-Based, Default is RMS ")
     parser.add_argument(
         "-p", "--prefix", type=str, default="file", help="Output file name prefix"
     )
@@ -214,6 +247,7 @@ def main():
     kwargs = {
         "input_file": args.input_file,
         "output_dir": args.output_dir,
+        "method": args.method,
         "samplerate": args.samplerate,
         "prefix": args.prefix,
         "frame_length": args.frame_length,
