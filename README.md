@@ -1,3 +1,8 @@
+# Sound Split and ASR
+
+Split soundfiles by silence / low noise. Processing ASR via Yandex Cloud or Google Cloud. Compare ASR Results with text.
+
+
 Requirements:
 
 ```
